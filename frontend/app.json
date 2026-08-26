@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "FitIntel",
+    "slug": "fitintel",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "fitintel",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0B0F1A"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.fitintel.app",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "FitIntel, bel bölgesi görsel ilerleme takibi için fotoğraf seçmene izin ister.",
+        "NSCameraUsageDescription": "FitIntel, bel bölgesi görsel ilerleme takibi için kamera kullanır."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B0F1A"
+      },
+      "package": "com.fitintel.app"
+    },
+    "extra": {
+      "API_BASE_URL": "http://localhost:5000"
+    },
+    "plugins": [
+      "expo-asset",
+      [
+        "expo-notifications",
+        {
+          "color": "#7C4DFF",
+          "defaultChannel": "default"
+        }
+      ]
+    ]
+  }
+}
