@@ -1,62 +1,35 @@
-import './global.css';
 import React, { useEffect } from 'react';
-import { StatusBar } from 'expo-status-bar';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { View, StatusBar, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { View } from 'react-native';
+import { RootNavigator } from './src/navigation/RootNavigator';
+import { useUserStore } from './src/store/userStore';
+import './global.css';
 
-import { RootNavigator } from '@/navigation/RootNavigator';
-import { colors } from '@/theme/colors';
-import { useUserStore } from '@/store/userStore';
-import { syncNotifications } from '@/utils/notifications';
-
-const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
-});
-
-const navTheme = {
-  ...DefaultTheme,
-  dark: true,
-  colors: {
-    ...DefaultTheme.colors,
-    background: colors.bg,
-    card: colors.bg,
-    text: colors.textHi,
-    border: colors.border,
-    primary: colors.primary,
-    notification: colors.primary,
-  },
-};
+const queryClient = new QueryClient();
 
 export default function App() {
-  const hydrate = useUserStore((s) => s.hydrate);
-  const hydrated = useUserStore((s) => s.hydrated);
-  const userId = useUserStore((s) => s.userId);
+  const hydrate = useUserStore((state) => state.hydrate);
 
-  useEffect(() => { hydrate(); }, [hydrate]);
-
-  // Sync today's smart notifications whenever we have a user id (cold-start path).
   useEffect(() => {
-    if (!hydrated || !userId) return;
-    syncNotifications(userId).catch(() => { /* silent: handled inside */ });
-  }, [hydrated, userId]);
-
-  if (!hydrated) {
-    return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
-  }
+    hydrate();
+  }, [hydrate]);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
-      <SafeAreaProvider>
-        <QueryClientProvider client={queryClient}>
-          <NavigationContainer theme={navTheme}>
-            <StatusBar style="light" />
-            <RootNavigator />
-          </NavigationContainer>
-        </QueryClientProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <SafeAreaProvider style={styles.container}>
+      <QueryClientProvider client={queryClient}>
+        <StatusBar barStyle="dark-content" backgroundColor="#F8FAF8" />
+        <View style={styles.container}>
+          <RootNavigator />
+        </View>
+      </QueryClientProvider>
+    </SafeAreaProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAF8',
+  },
+});

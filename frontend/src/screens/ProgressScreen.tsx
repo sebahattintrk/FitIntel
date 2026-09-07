@@ -1,367 +1,339 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, ScrollView, TextInput, Alert, Dimensions, RefreshControl, Pressable,
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  RefreshControl,
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import type { RootStackParamList } from '@/navigation/RootNavigator';
 
-import { ScreenHeader } from '@/components/ScreenHeader';
-import { Card } from '@/components/Card';
-import { Sparkline } from '@/components/Sparkline';
-import { ProgressRing } from '@/components/ProgressRing';
-import { PrimaryButton } from '@/components/PrimaryButton';
-import { Loader } from '@/components/Loader';
-import { InsightCard } from '@/components/InsightCard';
-import { RangeTabs } from '@/components/RangeTabs';
-import { MetricChangeCard } from '@/components/MetricChangeCard';
-import { IconCircle } from '@/components/IconCircle';
-
-import { useDashboard, useLogDay } from '@/api/queries';
+import { api } from '@/api/client';
 import { useUserStore } from '@/store/userStore';
 import { colors } from '@/theme/colors';
 
-type Range = 'week' | 'month' | 'q' | 'year';
-
-// 3-step self-rated daily compliance. Maps to 0-100 stored on the server.
-type ComplianceRating = 'bad' | 'ok' | 'good';
-const COMPLIANCE_VALUE: Record<ComplianceRating, number> = { bad: 40, ok: 70, good: 95 };
-const COMPLIANCE_LABEL: Record<ComplianceRating, string> = { bad: 'Kötü', ok: 'Orta', good: 'İyi' };
+interface ProgressData {
+  targets: {
+    calorie_target: number;
+    protein_target: number;
+    carbs_target: number;
+    fats_target: number;
+    goal: string;
+    name: string;
+  };
+  today: {
+    totals: {
+      total_calories: number;
+      total_protein: number;
+      total_carbs: number;
+      total_fats: number;
+    };
+    meals: Array<{
+      id: number;
+      food_name: string;
+      calories: number;
+      protein_g: number;
+      carbs_g: number;
+      fats_g: number;
+      time: string;
+    }>;
+  };
+  weeklyTrend: Array<{ log_date: string; calories: number; protein: number }>;
+  monthlyStats: {
+    logged_days: number;
+    avg_daily_calories: number;
+    avg_daily_protein: number;
+  };
+}
 
 export function ProgressScreen() {
-  const userId = useUserStore((s) => s.userId);
-  const dash = useDashboard(userId);
-  const log  = useLogDay();
-  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const userId = useUserStore((s) => Number(s.user?.id) || 1);
 
-  const [range, setRange] = useState<Range>('month');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [data, setData] = useState<ProgressData | null>(null);
 
-  const [weight, setWeight] = useState('');
-  const [waist, setWaist]   = useState('');
-  const [water,  setWater]  = useState('1500');
-  const [rating, setRating] = useState<ComplianceRating | null>(null);
+  const [reportPeriod, setReportPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+  const [reportLoading, setReportLoading] = useState(false);
+  const [aiReport, setAiReport] = useState<string | null>(null);
 
-  const trend  = dash.data?.trend ?? [];
-  const screenWidth = Dimensions.get('window').width - 40 - 32;
-
-  const weightSeries = useMemo(
-    () => trend.map((t) => Number(t.weight_kg)).filter((v) => Number.isFinite(v) && v > 0),
-    [trend],
-  );
-  const complianceSeries = useMemo(() => trend.map((t) => Number(t.compliance) || 0), [trend]);
-  const waistSeries      = useMemo(
-    () => trend.map((t) => Number(t.waist_cm)).filter((v) => Number.isFinite(v) && v > 0),
-    [trend],
-  );
-  const waterSeries      = useMemo(() => trend.map((t) => Number(t.water_ml) || 0), [trend]);
-
-  const weightStart = weightSeries[0];
-  const weightNow   = weightSeries[weightSeries.length - 1];
-  const weightDelta = weightStart && weightNow ? weightNow - weightStart : 0;
-
-  const waistStart  = waistSeries[0];
-  const waistNow    = waistSeries[waistSeries.length - 1];
-  const waistDelta  = waistStart && waistNow ? waistNow - waistStart : 0;
-
-  const avgCompliance = complianceSeries.length
-    ? Math.round(complianceSeries.reduce((s, v) => s + v, 0) / complianceSeries.length)
-    : (dash.data?.today.compliance ?? 0);
-
-  const avgWater = waterSeries.length
-    ? Math.round(waterSeries.reduce((s, v) => s + v, 0) / waterSeries.length)
-    : 0;
-
-  const onSave = async () => {
-    if (!userId) return;
+  const fetchProgress = useCallback(async () => {
     try {
-      await log.mutateAsync({
-        user_id: userId,
-        weight_kg: weight ? Number(weight) : undefined,
-        waist_cm:  waist  ? Number(waist)  : undefined,
-        water_ml:  water  ? Number(water)  : 0,
-        compliance: rating ? COMPLIANCE_VALUE[rating] : undefined,
-      });
-      setWeight(''); setWaist(''); setRating(null);
+      const res = await api.get<ProgressData>(`/api/progress/${userId}`);
+      setData(res.data);
+    } catch (err) {
+      console.error('Progress fetch error:', err);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    fetchProgress();
+  }, [fetchProgress]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchProgress();
+  };
+
+  const handleGenerateReport = async (period: 'weekly' | 'monthly') => {
+    setReportPeriod(period);
+    setReportLoading(true);
+    setAiReport(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      const res = await api.post<{ report: string }>(`/api/progress/${userId}/ai-report`, { period });
+      setAiReport(res.data.report);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Kaydedildi', 'Bugünün günlüğü güncellendi.');
     } catch (err: any) {
-      Alert.alert('Kaydedilemedi', err?.message ?? 'Lütfen daha sonra tekrar dene.');
+      Alert.alert('Rapor Hatası', 'AI raporu oluşturulamadı: ' + (err?.message || 'Bilinmeyen hata'));
+    } finally {
+      setReportLoading(false);
     }
   };
 
-  if (dash.isLoading) return <Loader label="Yükleniyor…" />;
+  if (loading && !refreshing) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.bg }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ color: colors.textMid, marginTop: 12, fontSize: 13 }}>Veriler yükleniyor…</Text>
+      </View>
+    );
+  }
+
+  const totals = data?.today.totals || { total_calories: 0, total_protein: 0, total_carbs: 0, total_fats: 0 };
+  const targets = data?.targets || { calorie_target: 2796, protein_target: 116, carbs_target: 400, fats_target: 60 };
+
+  const calProgress = Math.min(100, Math.round((totals.total_calories / (targets.calorie_target || 1)) * 100));
+  const proProgress = Math.min(100, Math.round((Number(totals.total_protein) / (targets.protein_target || 1)) * 100));
 
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView
-        contentContainerStyle={{ paddingBottom: 140 }}
+        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: 170 }}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={dash.isFetching && !dash.isLoading}
-            onRefresh={dash.refetch}
-            tintColor={colors.textLow}
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       >
-        <ScreenHeader subtitle="İlerleme Takibi" title="Takip" />
-
-        <View className="px-5 mb-3">
-          <RangeTabs<Range>
-            value={range}
-            onChange={setRange}
-            options={[
-              { value: 'week',  label: 'Hafta' },
-              { value: 'month', label: 'Ay' },
-              { value: 'q',     label: '3 Ay' },
-              { value: 'year',  label: 'Yıl' },
-            ]}
-          />
+        {/* Başlık */}
+        <View style={{ marginBottom: 18 }}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: colors.textLow, letterSpacing: 1 }}>GELİŞİM & RAPORLAR</Text>
+          <Text style={{ fontSize: 26, fontWeight: '800', color: colors.textHi, marginTop: 2 }}>Günlük İlerleme</Text>
         </View>
 
-        <View className="px-5 flex-row" style={{ gap: 12 }}>
-          <MetricChangeCard
-            label="Kilo Değişimi"
-            unit="kg"
-            delta={weightDelta || 0}
-            start={weightStart}
-            current={weightNow}
-            positiveIsGood={false}
-          />
-          <MetricChangeCard
-            label="Bel Çevresi"
-            unit="cm"
-            delta={waistDelta || 0}
-            start={waistStart}
-            current={waistNow}
-            positiveIsGood={false}
-          />
-        </View>
-
-        <View className="px-5 mt-3">
-          <Card>
-            <View className="flex-row items-baseline justify-between mb-2">
-              <Text className="text-textLow text-xs uppercase tracking-widest">Kilo Değişimi</Text>
-              <Text className="text-textHi text-base font-semibold">
-                {weightNow ? `${weightNow.toFixed(1)} kg` : '—'}
-              </Text>
-            </View>
-            <Sparkline
-              data={weightSeries.length > 0 ? weightSeries : [0]}
-              width={screenWidth}
-              height={120}
-              color={colors.success}
-            />
-          </Card>
-        </View>
-
-        {/* Uyum Skoru */}
-        <View className="px-5 mt-3">
-          <Card>
-            <View className="flex-row items-center">
-              <ProgressRing
-                size={120}
-                stroke={12}
-                progress={avgCompliance / 100}
-                value={`%${avgCompliance}`}
-                caption="Uyum Skoru"
-                color={colors.success}
-              />
-              <View style={{ flex: 1, paddingLeft: 18 }}>
-                <Text className="text-textHi text-base font-semibold mb-2">
-                  {avgCompliance >= 85 ? 'Harika gidiyorsun!' :
-                   avgCompliance >= 70 ? 'İyi yoldasın' :
-                                         'Daha tutarlı olalım'}
-                </Text>
-                <ScoreBar label="Beslenme"    pct={avgCompliance} />
-                <ScoreBar label="Su Tüketimi" pct={Math.round((avgWater / 3000) * 100)} />
-              </View>
-            </View>
-          </Card>
-        </View>
-
-        {/* AI Yorumum */}
-        {dash.data?.insight ? (
-          <View className="px-5 mt-3">
-            <InsightCard insight={dash.data.insight} />
+        {/* Günün Makro Durumu */}
+        <View style={styles.card}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+            <Text style={styles.cardTitle}>BUGÜNÜN KALORİ ÖZETİ</Text>
+            <Text style={{ color: colors.textMid, fontSize: 13, fontWeight: '600' }}>
+              {totals.total_calories} / {targets.calorie_target} kcal
+            </Text>
           </View>
-        ) : null}
 
-        {/* Premium: Waist visual tracking */}
-        <View className="px-5 mt-3">
-          <Pressable onPress={() => navigation.navigate('ProgressPhotos')}>
-            <Card>
-              <View className="flex-row items-center">
-                <View
-                  style={{
-                    width: 44, height: 44, borderRadius: 14,
-                    backgroundColor: 'rgba(245,158,11,0.15)',
-                    alignItems: 'center', justifyContent: 'center', marginRight: 14,
-                  }}
-                >
-                  <Text style={{ fontSize: 22 }}>📸</Text>
-                </View>
+          {/* Kalori Bar */}
+          <View style={styles.progressBarBg}>
+            <View style={[styles.progressBarFill, { width: `${calProgress}%`, backgroundColor: colors.primary }]} />
+          </View>
+
+          {/* Protein Bar */}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 14, marginBottom: 8 }}>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: colors.textHi }}>Protein Alımı</Text>
+            <Text style={{ color: colors.textMid, fontSize: 13, fontWeight: '600' }}>
+              {totals.total_protein} / {targets.protein_target}g (%{proProgress})
+            </Text>
+          </View>
+          <View style={styles.progressBarBg}>
+            <View style={[styles.progressBarFill, { width: `${proProgress}%`, backgroundColor: '#38BDF8' }]} />
+          </View>
+
+          {/* Karb & Yağ Dağılımı */}
+          <View style={{ flexDirection: 'row', marginTop: 16, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border, gap: 12 }}>
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Text style={{ color: colors.textLow, fontSize: 11, fontWeight: '600' }}>Karbonhidrat</Text>
+              <Text style={{ color: colors.textHi, fontSize: 15, fontWeight: '700', marginTop: 2 }}>{totals.total_carbs}g</Text>
+            </View>
+            <View style={{ width: 1, height: '100%', backgroundColor: colors.border }} />
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Text style={{ color: colors.textLow, fontSize: 11, fontWeight: '600' }}>Sağlıklı Yağ</Text>
+              <Text style={{ color: colors.textHi, fontSize: 15, fontWeight: '700', marginTop: 2 }}>{totals.total_fats}g</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* AI Tarafından Kaydedilen Yemekler */}
+        <View style={[styles.card, { marginTop: 16 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="restaurant-outline" size={18} color={colors.primary} />
+              <Text style={styles.cardTitle}>BUGÜN YENENLER (AI GÜNLÜK)</Text>
+            </View>
+            <Text style={{ fontSize: 11, color: colors.textLow }}>{data?.today.meals.length || 0} Öğün</Text>
+          </View>
+
+          {data?.today.meals && data.today.meals.length > 0 ? (
+            data.today.meals.map((m) => (
+              <View key={m.id} style={styles.mealItem}>
                 <View style={{ flex: 1 }}>
-                  <View className="flex-row items-center">
-                    <Text className="text-textHi text-sm font-semibold">Bel Görsel Takibi</Text>
-                    <View
-                      style={{
-                        marginLeft: 8,
-                        paddingHorizontal: 7, paddingVertical: 2,
-                        borderRadius: 999, backgroundColor: 'rgba(245,158,11,0.15)',
-                        borderWidth: 1, borderColor: colors.warning,
-                      }}
-                    >
-                      <Text style={{ color: colors.warning, fontSize: 9, fontWeight: '800', letterSpacing: 0.6 }}>
-                        PREMIUM
-                      </Text>
-                    </View>
-                  </View>
-                  <Text className="text-textMid text-xs mt-1" numberOfLines={2}>
-                    Haftada 1 fotoğraf yükle, AI karar motoru kilo verisiyle birleştirsin.
+                  <Text style={{ color: colors.textHi, fontSize: 14, fontWeight: '700' }}>{m.food_name}</Text>
+                  <Text style={{ color: colors.textLow, fontSize: 12, marginTop: 2 }}>
+                    Saat {m.time} · {m.protein_g}g Protein · {m.carbs_g}g Karb
                   </Text>
                 </View>
-                <Text style={{ color: colors.textLow, fontSize: 22, marginLeft: 4 }}>›</Text>
+                <View style={styles.badgeCal}>
+                  <Text style={{ color: colors.primary, fontSize: 13, fontWeight: '700' }}>+{m.calories} kcal</Text>
+                </View>
               </View>
-            </Card>
-          </Pressable>
+            ))
+          ) : (
+            <View style={{ paddingVertical: 18, alignItems: 'center' }}>
+              <Ionicons name="chatbubble-ellipses-outline" size={28} color={colors.textLow} />
+              <Text style={{ color: colors.textMid, fontSize: 13, marginTop: 8, textAlign: 'center' }}>
+                Bugün henüz bir şey yazmadın.
+              </Text>
+              <Text style={{ color: colors.textLow, fontSize: 11, marginTop: 2, textAlign: 'center' }}>
+                AI Koç'a "150 gr tavuk pilav yedim" yaz, otomatik buraya eklensin.
+              </Text>
+            </View>
+          )}
         </View>
 
-        {/* Günlük Kontrol */}
-        <View className="px-5 mt-4">
-          <Text className="text-textHi text-base font-semibold mb-3">Günlük Kontrol</Text>
-          <Card>
-            <View className="flex-row" style={{ gap: 8 }}>
-              <IconCircle icon="⚖️" label="Kilo"     value={weightNow ? `${weightNow.toFixed(1)} kg` : '—'} color={colors.primary} />
-              <IconCircle icon="📏" label="Bel"      value={waistNow  ? `${waistNow.toFixed(1)} cm` : '—'}  color="#8B5CF6" />
-              <IconCircle icon="💧" label="Su"       value={`${(((dash.data?.today.water_ml) ?? 0) / 1000).toFixed(1)} L`} color="#38BDF8" />
-              <IconCircle icon="✓"  label="Uyum"     value={`%${dash.data?.today.compliance ?? 0}`} color={colors.success} />
+        {/* AI Koç Dönemsel Raporu */}
+        <View style={[styles.card, { marginTop: 16 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+            <Ionicons name="sparkles" size={18} color="#F59E0B" />
+            <Text style={[styles.cardTitle, { color: '#B45309' }]}>AI KOÇ ANALİZ RAPORU</Text>
+          </View>
+
+          <Text style={{ color: colors.textMid, fontSize: 13, lineHeight: 18, marginBottom: 14 }}>
+            Yapay zeka, son dönemdeki kalori ve protein tutarlılığını analiz edip sana özel stratejik geri bildirim üretir.
+          </Text>
+
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+
+            <Pressable
+              onPress={() => handleGenerateReport('daily')}
+              disabled={reportLoading}
+              style={[styles.reportBtn, reportPeriod === 'daily' && styles.reportBtnActive]}
+            >
+              <Text style={[styles.reportBtnText, reportPeriod === 'daily' && styles.reportBtnTextActive]}>
+                Günlük Rapor
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => handleGenerateReport('weekly')}
+              disabled={reportLoading}
+              style={[styles.reportBtn, reportPeriod === 'weekly' && styles.reportBtnActive]}
+            >
+              <Text style={[styles.reportBtnText, reportPeriod === 'weekly' && styles.reportBtnTextActive]}>
+                Haftalık Rapor
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => handleGenerateReport('monthly')}
+              disabled={reportLoading}
+              style={[styles.reportBtn, reportPeriod === 'monthly' && styles.reportBtnActive]}
+            >
+              <Text style={[styles.reportBtnText, reportPeriod === 'monthly' && styles.reportBtnTextActive]}>
+                Aylık Rapor
+              </Text>
+            </Pressable>
+          </View>
+
+          {reportLoading && (
+            <View style={{ paddingVertical: 20, alignItems: 'center', gap: 8 }}>
+              <ActivityIndicator size="small" color={colors.primary} />
+              <Text style={{ color: colors.textMid, fontSize: 12 }}>AI Koç verilerini analiz ediyor…</Text>
             </View>
-          </Card>
-        </View>
+          )}
 
-        {/* Bugünü logla */}
-        <View className="px-5 mt-4">
-          <Card>
-            <Text className="text-textLow text-xs uppercase tracking-widest mb-3">Bugünü Logla</Text>
-            <Text className="text-textLow text-[11px] mb-3" style={{ lineHeight: 16 }}>
-              Kalori ve protein, Plan ekranındaki öğün işaretlerinden otomatik hesaplanır.
-            </Text>
-
-            <Row label="Kilo (kg)">
-              <Field value={weight} onChangeText={setWeight} placeholder="78.4" />
-            </Row>
-            <Row label="Bel (cm)">
-              <Field value={waist} onChangeText={setWaist} placeholder="84" />
-            </Row>
-            <Row label="Su (ml)">
-              <Field value={water} onChangeText={setWater} placeholder="2500" />
-            </Row>
-
-            <Text className="text-textMid text-xs mb-2 mt-1">Bugüne uyum</Text>
-            <View className="flex-row" style={{ gap: 8 }}>
-              {(['bad', 'ok', 'good'] as ComplianceRating[]).map((r) => (
-                <ComplianceChip
-                  key={r}
-                  active={rating === r}
-                  label={COMPLIANCE_LABEL[r]}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    setRating(r);
-                  }}
-                />
-              ))}
+          {aiReport && !reportLoading && (
+            <View style={styles.aiReportContainer}>
+              <Text style={{ color: colors.textHi, fontSize: 13, lineHeight: 21 }}>
+                {aiReport}
+              </Text>
             </View>
-
-            <View className="mt-4">
-              <PrimaryButton label="Günlüğü Kaydet" onPress={onSave} loading={log.isPending} />
-            </View>
-          </Card>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function ScoreBar({ label, pct }: { label: string; pct: number }) {
-  const clamped = Math.max(0, Math.min(100, pct || 0));
-  return (
-    <View className="mb-2">
-      <View className="flex-row justify-between mb-0.5">
-        <Text style={{ color: colors.textMid, fontSize: 11 }}>{label}</Text>
-        <Text style={{ color: colors.textHi, fontSize: 11, fontWeight: '700' }}>%{clamped}</Text>
-      </View>
-      <View
-        style={{
-          height: 5, borderRadius: 5,
-          backgroundColor: colors.border, overflow: 'hidden',
-        }}
-      >
-        <View style={{ width: `${clamped}%`, height: '100%', backgroundColor: colors.success, borderRadius: 5 }} />
-      </View>
-    </View>
-  );
-}
+const styles = StyleSheet.create({
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  cardTitle: { fontSize: 11, fontWeight: '700', color: colors.textLow, letterSpacing: 0.8 },
+  progressBarBg: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.surface2,
+    overflow: 'hidden',
+  },
+  progressBarFill: { height: '100%', borderRadius: 4 },
+  mealItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.surface2,
+  },
+  badgeCal: {
+    backgroundColor: '#ECFDF5',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  reportBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: colors.surface2,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  reportBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  reportBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textMid,
+  },
+  reportBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  aiReportContainer: {
+    marginTop: 14,
+    backgroundColor: colors.surface2,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+});
 
-function ComplianceChip({
-  label, active, onPress,
-}: { label: string; active: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={{
-        flex: 1,
-        paddingVertical: 11,
-        borderRadius: 14,
-        borderWidth: 1,
-        alignItems: 'center',
-        backgroundColor: active ? colors.primary : colors.surface2,
-        borderColor: active ? colors.primary : colors.border,
-      }}
-    >
-      <Text
-        style={{
-          color: active ? '#fff' : colors.textMid,
-          fontSize: 13,
-          fontWeight: '700',
-        }}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <View className="mb-3">
-      <Text className="text-textMid text-xs mb-1.5">{label}</Text>
-      {children}
-    </View>
-  );
-}
-
-function Field(props: React.ComponentProps<typeof TextInput>) {
-  return (
-    <TextInput
-      placeholderTextColor={colors.textLow}
-      keyboardType="decimal-pad"
-      {...props}
-      style={[
-        {
-          backgroundColor: colors.surface2,
-          borderColor: colors.border,
-          borderWidth: 1,
-          borderRadius: 14,
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          color: colors.textHi,
-          fontSize: 15,
-        },
-        props.style,
-      ]}
-    />
-  );
-}
+export default ProgressScreen;

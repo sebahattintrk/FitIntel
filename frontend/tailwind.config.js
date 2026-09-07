@@ -1,31 +1,24 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: [
-    './App.tsx',
-    './src/**/*.{ts,tsx}',
-  ],
-  presets: [require('nativewind/preset')],
+  content: ["./App.{js,jsx,ts,tsx}", "./src/**/*.{js,jsx,ts,tsx}"],
+  presets: [require("nativewind/preset")],
   theme: {
     extend: {
       colors: {
-        bg:       '#0B0F1A',
-        surface:  '#121826',
-        surface2: '#171F30',
-        border:   '#1F2A40',
-        primary:  '#7C4DFF',
-        primaryDim: '#5A36C8',
-        success:  '#22C55E',
-        warning:  '#F59E0B',
-        danger:   '#EF4444',
-        textHi:   '#F5F7FA',
-        textMid:  '#B6BECF',
-        textLow:  '#6F7891',
-      },
-      fontFamily: {
-        sans: ['System'],
+        canvas: '#F8FAF8',
+        card: '#FFFFFF',
+        mint: {
+          50: '#F0FDF4',
+          100: '#DCFCE7',
+          200: '#BBF7D0',
+          500: '#10B981',
+          700: '#047857',
+          900: '#064E3B',
+        },
       },
       borderRadius: {
-        xl2: '20px',
+        '2xl': '20px',
+        '3xl': '28px',
       },
     },
   },

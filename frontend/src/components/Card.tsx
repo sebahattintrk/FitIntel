@@ -1,29 +1,38 @@
 import React from 'react';
 import { View, ViewProps } from 'react-native';
 
-type Props = ViewProps & { padded?: boolean };
+interface CardProps extends ViewProps {
+  variant?: 'white' | 'softGreen';
+  className?: string;
+}
 
-export function Card({ children, padded = true, style, className, ...rest }: Props) {
+export const Card: React.FC<CardProps> = ({ 
+  children, 
+  variant = 'white', 
+  className = '', 
+  style, 
+  ...props 
+}) => {
+  const bgStyle = variant === 'white' 
+    ? 'bg-white border-[#E2EFE7]' 
+    : 'bg-[#F0FDF4] border-[#D1FAE5]';
+
   return (
     <View
-      {...rest}
-      className={[
-        'rounded-3xl bg-surface border border-border',
-        padded ? 'p-5' : '',
-        className ?? '',
-      ].join(' ')}
+      className={`rounded-[24px] p-5 border ${bgStyle} shadow-sm ${className}`}
       style={[
         {
-          shadowColor: '#000',
-          shadowOpacity: 0.18,
-          shadowRadius: 18,
-          shadowOffset: { width: 0, height: 8 },
-          elevation: 4,
+          shadowColor: '#064E3B',
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.05,
+          shadowRadius: 16,
+          elevation: 3,
         },
-        style,
+        style
       ]}
+      {...props}
     >
       {children}
     </View>
   );
-}
+};

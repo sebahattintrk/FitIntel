@@ -1,12 +1,11 @@
-require('dotenv').config();
 const { Pool } = require('pg');
+require('dotenv').config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-});
-
-pool.on('error', (err) => {
-  console.error('[pg] unexpected error on idle client', err);
+  ssl: {
+    rejectUnauthorized: false, // Neon SSL bağlantısı için gerekli
+  },
 });
 
 module.exports = {

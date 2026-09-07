@@ -1,9 +1,14 @@
 const router = require('express').Router();
 const db = require('../db');
 const { generateMeals, turkishLower } = require('../services/mealGenerator');
+const { GoogleGenAI } = require('@google/genai');
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack'];
 const RECENT_NAMES_TO_EXCLUDE = 16;
+
+const checkLimit = require('../middleware/checkLimit');
 
 // GET /meal-plan/:userId   – returns today's plan, generating one if missing
 router.get('/:userId', async (req, res, next) => {
@@ -22,23 +27,81 @@ router.get('/:userId', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /meal-plan/:userId/regenerate  – delete today's plan and create a fresh one
-router.post('/:userId/regenerate', async (req, res, next) => {
+// POST /meal-plan/:userId/custom-slot - Kullanıcının elindeki malzemelere göre öğünü yeniden tasarlar
+router.post('/:userId/custom-slot', async (req, res, next) => {
   try {
     const userId = Number(req.params.userId);
-    if (!userId) return res.status(400).json({ error: 'invalid_user_id' });
+    const { slot, ingredients } = req.body;
+    if (!userId || !SLOTS.includes(slot) || !ingredients?.trim()) {
+      return res.status(400).json({ error: 'Geçersiz parametreler veya boş malzeme listesi.' });
+    }
 
     const userR = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
-    if (userR.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
+    if (userR.rows.length === 0) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
     const user = userR.rows[0];
 
-    await db.query(
-      `DELETE FROM meal_plans WHERE user_id = $1 AND plan_date = CURRENT_DATE`,
-      [userId]
+    let planRow = await getTodayPlan(userId);
+    if (!planRow) planRow = await generatePlan(user);
+
+    const slotShare = { breakfast: 0.25, lunch: 0.32, dinner: 0.33, snack: 0.10 };
+    const targetKcal = Math.round((user.calorie_target || 2500) * (slotShare[slot] || 0.25));
+    const targetPro = Math.round((user.protein_target || 120) * (slotShare[slot] || 0.25));
+
+    const prompt = `
+Sen FitIntel kişisel beslenme koçusun.
+Danışanın: ${user.name} | Hedef: ${user.goal}
+Öğün: ${slot}
+Hedef Değerler: Yaklaşık ${targetKcal} kcal, ${targetPro}g Protein.
+
+Danışanın elinde bulunan malzemeler:
+"${ingredients}"
+
+GÖREV:
+Danışanının evinde bulunan bu malzemeleri (ve evdeki temel baharat, yağ, tuz, su vb.) kullanarak, onun hedefine ve kalori/protein ihtiyacına tam uyan lezzetli ve pratik 1 Türk öğünü oluştur.
+SADECE aşağıdaki JSON formatında geçerli bir JSON döndür, başka metin yazma:
+{
+  "name": "Yemek Adı",
+  "description": "Yemeğin kısa ve pratik hazırlanış açıklaması",
+  "calories": ${targetKcal},
+  "protein_g": ${targetPro},
+  "carbs_g": 35,
+  "fats_g": 14,
+  "serving_size_g": 300,
+  "prep_time_min": 15,
+  "ingredients": ["malzeme 1", "malzeme 2"],
+  "rationale": "Evdeki malzemelerinle günlük kalori ve protein dengeni bozmadan hazırlandı."
+}
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    let cleanJson = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+    const newMeal = JSON.parse(cleanJson);
+    newMeal.slot = slot;
+    newMeal.category = slot;
+    newMeal.tags = ['sana-özel', 'evdeki-malzemeler'];
+
+    const snapshot = mealToSnapshot(newMeal, 'ai_customized');
+
+    const updateRes = await db.query(
+      `UPDATE meal_plans
+       SET ${slot}_snapshot = $1
+       WHERE user_id = $2 AND plan_date = CURRENT_DATE
+       RETURNING *`,
+      [snapshot, userId]
     );
-    const planRow = await generatePlan(user);
-    return res.json(serializePlan(user, planRow));
-  } catch (err) { next(err); }
+
+    return res.json(serializePlan(user, updateRes.rows[0]));
+  } catch (err) {
+    console.error('Custom slot error:', err);
+    next(err);
+  }
 });
 
 // PATCH /meal-plan/:userId/meal   body: { slot, done }
@@ -60,7 +123,26 @@ router.patch('/:userId/meal', async (req, res, next) => {
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'plan_not_found' });
 
-    res.json({ slot, done });
+    const plan = r.rows[0];
+    const snap = plan[`${slot}_snapshot`];
+    const cal = Math.round(Number(snap?.calories || 0));
+    const pro = Math.round(Number(snap?.protein_g || 0));
+
+    // Öğün yenildiyse daily_logs'a ekle, işaret kaldırıldıysa düş
+    const calDiff = done ? cal : -cal;
+    const proDiff = done ? pro : -pro;
+
+    await db.query(
+      `INSERT INTO daily_logs (user_id, log_date, calories_eaten, protein_eaten)
+       VALUES ($1, CURRENT_DATE, GREATEST(0, $2), GREATEST(0, $3))
+       ON CONFLICT (user_id, log_date)
+       DO UPDATE SET 
+         calories_eaten = GREATEST(0, daily_logs.calories_eaten + $2),
+         protein_eaten = GREATEST(0, daily_logs.protein_eaten + $3);`,
+      [userId, calDiff, proDiff]
+    );
+
+    res.json({ slot, done, calDiff, proDiff });
   } catch (err) { next(err); }
 });
 

@@ -178,7 +178,7 @@ export function useMealPlan(userId: number | null) {
   return useQuery({
     queryKey: ['meal-plan', userId],
     enabled: !!userId,
-    queryFn: async () => (await api.get<MealPlan>(`/meal-plan/${userId}`)).data,
+    queryFn: async () => (await api.get<MealPlan>(`/api/meal-plan/${userId}`)).data,
   });
 }
 
@@ -186,7 +186,7 @@ export function useRegeneratePlan(userId: number | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const { data } = await api.post<MealPlan>(`/meal-plan/${userId}/regenerate`);
+      const { data } = await api.post<MealPlan>(`/api/meal-plan/${userId}/regenerate`);
       return data;
     },
     onSuccess: (data) => {
@@ -199,7 +199,7 @@ export function useToggleMealDone(userId: number | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { slot: MealSlot; done: boolean }) => {
-      const { data } = await api.patch(`/meal-plan/${userId}/meal`, vars);
+      const { data } = await api.patch(`/api/meal-plan/${userId}/meal`, vars);
       return data as { slot: MealSlot; done: boolean };
     },
     // Optimistic: flip the local Meal.done immediately, rollback on error.
@@ -233,10 +233,14 @@ export type ChatMessage = { role: ChatRole; content: string };
 
 export function useChat(userId: number | null) {
   return useMutation({
-    mutationFn: async (vars: { message: string; history: ChatMessage[] }) => {
-      const { data } = await api.post<{ reply: string; source: string }>(
-        `/chat/${userId}`,
-        vars,
+    mutationFn: async (vars: { message: string; history?: ChatMessage[] }) => {
+      const { data } = await api.post<{ reply: string }>(
+        '/api/chat',
+        {
+          message: vars.message,
+          history: vars.history,
+          userId: userId || 1,
+        }
       );
       return data;
     },

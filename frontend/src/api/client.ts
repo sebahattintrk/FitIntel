@@ -1,36 +1,20 @@
 import axios from 'axios';
-import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const fromExtra =
-  (Constants.expoConfig?.extra as { API_BASE_URL?: string } | undefined)?.API_BASE_URL;
-
-const baseURL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ||
-  fromExtra ||
-  'http://localhost:5000';
-
-// Exposed so screens that need full URLs (e.g. <Image source={{ uri }}> for /uploads
-// static-served files) can construct them without re-reading config.
-export const API_BASE_URL = baseURL;
+export const API_BASE_URL = 'http://192.168.1.103:5001';
 
 export const api = axios.create({
-  baseURL,
-  timeout: 10_000,
-  headers: { 'Content-Type': 'application/json' },
+  baseURL: API_BASE_URL,
+  timeout: 30000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
 });
 
-if (__DEV__) {
-  // eslint-disable-next-line no-console
-  console.info('[api] baseURL', baseURL);
-}
-
-api.interceptors.response.use(
-  (r) => r,
-  (err) => {
-    if (__DEV__) {
-      // eslint-disable-next-line no-console
-      console.warn('[api]', err?.response?.status, err?.config?.baseURL, err?.config?.url, err?.message);
-    }
-    return Promise.reject(err);
+api.interceptors.request.use(async (config) => {
+  const token = await AsyncStorage.getItem('fitintel_token');
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
-);
+  return config;
+});

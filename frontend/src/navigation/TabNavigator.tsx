@@ -1,99 +1,129 @@
 import React from 'react';
-import { Platform, View, Text } from 'react-native';
+import { View, StyleSheet, Platform } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { BlurView } from 'expo-blur';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 
-import { colors } from '@/theme/colors';
-import { HomeScreen } from '@/screens/HomeScreen';
-import { PlanScreen } from '@/screens/PlanScreen';
-import { ProgressScreen } from '@/screens/ProgressScreen';
-import { SupplementsScreen } from '@/screens/SupplementsScreen';
-import { ProfileScreen } from '@/screens/ProfileScreen';
-// AI Coach chat is gated as a future premium feature. Route + backend service remain
-// live (see RootNavigator + services/aiChat.js) so we can re-enable by un-commenting
-// the <ChatFab /> below.
-// import { ChatFab } from '@/components/ChatFab';
+import { HomeScreen } from '../screens/HomeScreen';
+import { PlanScreen } from '../screens/PlanScreen';
+import { ChatScreen } from '../screens/ChatScreen';
+import { ProgressScreen } from '../screens/ProgressScreen';
+import { ProfileScreen } from '../screens/ProfileScreen';
 
 const Tab = createBottomTabNavigator();
 
-const ICONS: Record<string, string> = {
-  AnaSayfa:   '⌂',
-  Plan:       '◷',
-  Takip:      '◎',
-  Supplement: '✦',
-  Profil:     '☻',
-};
+export const TabNavigator = () => {
+  const insets = useSafeAreaInsets();
 
-function TabIcon({ name, focused }: { name: string; focused: boolean }) {
   return (
-    <View className="items-center justify-center">
-      <Text
-        style={{
-          color: focused ? colors.primary : colors.textLow,
-          fontSize: 22,
-          fontWeight: '600',
-          marginTop: 6,
-        }}
-      >
-        {ICONS[name]}
-      </Text>
-      <Text
-        style={{
-          color: focused ? colors.textHi : colors.textLow,
-          fontSize: 10,
-          fontWeight: '600',
-          marginTop: 2,
-          letterSpacing: 0.4,
-        }}
-      >
-        {name.toUpperCase()}
-      </Text>
-    </View>
-  );
-}
-
-export function TabNavigator() {
-  return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
     <Tab.Navigator
-      screenOptions={({ route }) => ({
+      screenOptions={{
         headerShown: false,
-        tabBarShowLabel: false,
-        tabBarIcon: ({ focused }) => <TabIcon name={route.name} focused={focused} />,
+        tabBarShowLabel: true,
+        tabBarActiveTintColor: '#10B981',
+        tabBarInactiveTintColor: '#94A3B8',
         tabBarStyle: {
           position: 'absolute',
-          left: 16,
-          right: 16,
-          bottom: Platform.OS === 'ios' ? 24 : 16,
-          height: 72,
-          borderTopWidth: 0,
+          bottom: Platform.OS === 'ios' ? insets.bottom : 16,
+          left: 14,
+          right: 14,
+          height: 66,
+          backgroundColor: '#FFFFFF',
           borderRadius: 24,
-          backgroundColor: 'rgba(18,24,38,0.92)',
-          borderColor: colors.border,
-          borderWidth: 1,
-          elevation: 12,
-          shadowColor: '#000',
-          shadowOpacity: 0.4,
-          shadowRadius: 18,
+          borderWidth: 1.5,
+          borderColor: '#E2EFE7',
+          paddingBottom: 8,
+          paddingTop: 8,
+          shadowColor: '#064E3B',
           shadowOffset: { width: 0, height: 8 },
+          shadowOpacity: 0.08,
+          shadowRadius: 20,
+          elevation: 10,
         },
-        tabBarBackground: () =>
-          Platform.OS === 'ios' ? (
-            <BlurView
-              intensity={40}
-              tint="dark"
-              style={{ flex: 1, borderRadius: 24, overflow: 'hidden' }}
-            />
-          ) : null,
-      })}
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: '700',
+          letterSpacing: 0.2,
+          marginTop: 2,
+        },
+      }}
     >
-      <Tab.Screen name="AnaSayfa"   component={HomeScreen} />
-      <Tab.Screen name="Plan"       component={PlanScreen} />
-      <Tab.Screen name="Takip"      component={ProgressScreen} />
-      <Tab.Screen name="Supplement" component={SupplementsScreen} />
-      <Tab.Screen name="Profil"     component={ProfileScreen} />
+      <Tab.Screen
+        name="Home"
+        component={HomeScreen}
+        options={{
+          tabBarLabel: 'Ana Sayfa',
+          tabBarIcon: ({ color, focused }) => (
+            <View style={[styles.iconBox, focused && styles.iconBoxActive]}>
+              <Ionicons name={focused ? 'home' : 'home-outline'} size={22} color={color} />
+            </View>
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Plan"
+        component={PlanScreen}
+        options={{
+          tabBarLabel: 'Öğün & Plan',
+          tabBarIcon: ({ color, focused }) => (
+            <View style={[styles.iconBox, focused && styles.iconBoxActive]}>
+              <Ionicons name={focused ? 'calendar' : 'calendar-outline'} size={22} color={color} />
+            </View>
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Chat"
+        component={ChatScreen}
+        options={{
+          tabBarLabel: 'AI Koç',
+          tabBarStyle: { display: 'none' }, // Alt menüyü bu ekranda gizler
+          tabBarIcon: ({ color, focused }) => (
+            <View style={[styles.iconBox, focused && styles.iconBoxActive]}>
+              <Ionicons name={focused ? 'chatbubbles' : 'chatbubbles-outline'} size={22} color={color} />
+            </View>
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Progress"
+        component={ProgressScreen}
+        options={{
+          tabBarLabel: 'Gelişim',
+          tabBarIcon: ({ color, focused }) => (
+            <View style={[styles.iconBox, focused && styles.iconBoxActive]}>
+              <Ionicons name={focused ? 'stats-chart' : 'stats-chart-outline'} size={22} color={color} />
+            </View>
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Profile"
+        component={ProfileScreen}
+        options={{
+          tabBarLabel: 'Profil',
+          tabBarIcon: ({ color, focused }) => (
+            <View style={[styles.iconBox, focused && styles.iconBoxActive]}>
+              <Ionicons name={focused ? 'person' : 'person-outline'} size={22} color={color} />
+            </View>
+          ),
+        }}
+      />
     </Tab.Navigator>
-      {/* <ChatFab />  ← re-enable when chat becomes a premium feature */}
-    </View>
   );
-}
+};
+
+const styles = StyleSheet.create({
+  iconBox: {
+    width: 38,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+  },
+  iconBoxActive: {
+    backgroundColor: '#F0FDF4',
+  },
+});
+
+export default TabNavigator;

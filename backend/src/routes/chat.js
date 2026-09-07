@@ -1,71 +1,97 @@
-const router = require('express').Router();
+const express = require('express');
+const router = express.Router();
 const db = require('../db');
-const { chat } = require('../services/aiChat');
+const { GoogleGenAI } = require('@google/genai');
 
-// POST /chat/:userId   body: { message: string, history?: [{role, content}] }
-router.post('/:userId', async (req, res, next) => {
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+const checkLimit = require('../middleware/checkLimit');
+
+router.post('/', checkLimit, async (req, res, next) => {
+  const { message, userId } = req.body;
+  const targetUserId = userId || 1;
+
   try {
-    const userId = Number(req.params.userId);
-    if (!userId) return res.status(400).json({ error: 'invalid_user_id' });
-
-    const { message, history = [] } = req.body || {};
-    if (!message || typeof message !== 'string') {
-      return res.status(400).json({ error: 'message_required' });
+    if (!message) {
+      return res.status(400).json({ error: 'Mesaj boş olamaz.' });
     }
 
-    // Pull all the context we'll inject into the prompt.
-    const [userR, todayR, last7R, planR] = await Promise.all([
-      db.query('SELECT * FROM users WHERE id = $1', [userId]),
-      db.query(
-        `SELECT * FROM daily_logs WHERE user_id = $1 AND log_date = CURRENT_DATE`,
-        [userId]
-      ),
-      db.query(
-        `SELECT log_date, weight_kg, waist_cm, water_ml, calories_eaten, protein_eaten, compliance
-           FROM daily_logs
-          WHERE user_id = $1 AND log_date >= CURRENT_DATE - INTERVAL '6 days'
-          ORDER BY log_date ASC`,
-        [userId]
-      ),
-      db.query(
-        `SELECT mp.*,
-                bm.name AS b_name, bm.calories AS b_cal, bm.protein_g AS b_pro,
-                lm.name AS l_name, lm.calories AS l_cal, lm.protein_g AS l_pro,
-                dm.name AS d_name, dm.calories AS d_cal, dm.protein_g AS d_pro,
-                sm.name AS s_name, sm.calories AS s_cal, sm.protein_g AS s_pro
-           FROM meal_plans mp
-           LEFT JOIN meals bm ON bm.id = mp.breakfast_id
-           LEFT JOIN meals lm ON lm.id = mp.lunch_id
-           LEFT JOIN meals dm ON dm.id = mp.dinner_id
-           LEFT JOIN meals sm ON sm.id = mp.snack_id
-          WHERE mp.user_id = $1 AND mp.plan_date = CURRENT_DATE`,
-        [userId]
-      ),
-    ]);
-
-    if (userR.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
-
-    const user = userR.rows[0];
-    const today = todayR.rows[0] || { calories_eaten: 0, protein_eaten: 0, water_ml: 0, compliance: 0 };
-    const last7 = last7R.rows;
-
-    const planRow = planR.rows[0];
-    const plan = planRow ? {
-      meals: [
-        planRow.b_name && { slot: 'breakfast', name: planRow.b_name, calories: planRow.b_cal, protein_g: planRow.b_pro, done: planRow.breakfast_done },
-        planRow.l_name && { slot: 'lunch',     name: planRow.l_name, calories: planRow.l_cal, protein_g: planRow.l_pro, done: planRow.lunch_done },
-        planRow.d_name && { slot: 'dinner',    name: planRow.d_name, calories: planRow.d_cal, protein_g: planRow.d_pro, done: planRow.dinner_done },
-        planRow.s_name && { slot: 'snack',     name: planRow.s_name, calories: planRow.s_cal, protein_g: planRow.s_pro, done: planRow.snack_done },
-      ].filter(Boolean),
-    } : null;
-
-    const result = await chat({ user, today, last7, plan, history, message });
-    res.json(result);
-  } catch (err) {
-    if (err.message === 'empty_message') {
-      return res.status(400).json({ error: 'empty_message' });
+    // 1. Kullanıcı bilgilerini çek
+    const userRes = await db.query('SELECT * FROM users WHERE id = $1', [targetUserId]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
     }
-    next(err);
+    const u = userRes.rows[0];
+
+    // 2. Bugün tüketilen toplam kaloriyi al (bağlam için)
+    const todaySummary = await db.query(`
+      SELECT COALESCE(SUM(calories), 0) as total_cal,
+             COALESCE(SUM(protein_g), 0) as total_pro
+      FROM food_logs
+      WHERE user_id = $1 AND log_date = CURRENT_DATE
+    `, [targetUserId]);
+    const eatenCal = todaySummary.rows[0].total_cal;
+    const eatenPro = todaySummary.rows[0].total_pro;
+
+    const systemInstruction = `
+Sen FitIntel uygulamasının kişisel beslenme koçusun.
+Kullanıcı: ${u.name || 'Danışan'} (${u.weight_kg}kg, Hedef: ${u.goal})
+Günlük Hedef: ${u.calorie_target} kcal | ${u.protein_target}g Protein
+Bugün Şu Ana Kadar Tükettiği: ${eatenCal} kcal | ${eatenPro}g Protein
+
+KRİTİK GÖREV (Besin Günlüğü):
+Kullanıcı bir şey yediğini, tükettiğini veya içtiğini belirtirse (örneğin: "150 gr tavuk pilav yedim", "öğlen 2 yumurta ve peynir yedim", "bir tabak makarna"):
+1. Porsiyonu ve besin değerlerini (Kalori, Protein, Karbonhidrat, Yağ) gerçekçi olarak tahmin et.
+2. Cevabının EN SONUNA kullanıcıya hissettirmeden şu formatta bir JSON bloğu ekle:
+\`\`\`json:food_log
+{"food_name": "150g Tavuk Pilav", "calories": 420, "protein_g": 38, "carbs_g": 48, "fats_g": 8}
+\`\`\`
+3. Yanıtında ise sıcak bir üslupla yemeği kaydettiğini, bu öğünden sonra günün geri kalanında kaç kalori/protein hakkı kaldığını söyle.
+4. Kullanıcı sadece normal soru sorduysa JSON bloğu EKLEME.
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: message,
+      config: {
+        systemInstruction,
+        temperature: 0.7,
+      },
+    });
+
+    let reply = response.text || '';
+
+    // 3. Yapay zeka yiyecek günlüğü bloğu üretti mi kontrol et
+    const logMatch = reply.match(/```json:food_log\s*([\s\S]*?)\s*```/);
+    let loggedItem = null;
+
+    if (logMatch) {
+      try {
+        const parsed = JSON.parse(logMatch[1]);
+        // Veritabanına kaydet
+        await db.query(`
+          INSERT INTO food_logs (user_id, food_name, calories, protein_g, carbs_g, fats_g)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `, [
+          targetUserId,
+          parsed.food_name,
+          Math.round(parsed.calories || 0),
+          parsed.protein_g || 0,
+          parsed.carbs_g || 0,
+          parsed.fats_g || 0
+        ]);
+        loggedItem = parsed;
+        // JSON etiketini kullanıcıya gidecek mesajdan temizle
+        reply = reply.replace(/```json:food_log[\s\S]*?```/, '').trim();
+      } catch (err) {
+        console.error('Yemek JSON ayrıştırma hatası:', err);
+      }
+    }
+
+    return res.status(200).json({ reply, loggedItem });
+  } catch (error) {
+    console.error('[Chat AI Error]:', error.message || error);
+    return res.status(500).json({ error: error.message || 'Koç şu an yanıt veremiyor.' });
   }
 });
 

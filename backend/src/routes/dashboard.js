@@ -1,93 +1,88 @@
-const router = require('express').Router();
+const express = require('express');
+const router = express.Router();
 const db = require('../db');
-const { buildInsight } = require('../services/aiInsight');
-const { computeStreak } = require('../services/streak');
 
-// GET /dashboard/:userId
-router.get('/:userId', async (req, res, next) => {
+router.get('/', async (req, res) => {
   try {
-    const userId = Number(req.params.userId);
-    if (!userId) return res.status(400).json({ error: 'invalid_user_id' });
+    // 1. Kullanıcı bilgilerini al
+    const userRes = await db.query('SELECT * FROM users ORDER BY id DESC LIMIT 1');
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Kayıtlı kullanıcı bulunamadı.' });
+    }
+    const user = userRes.rows[0];
 
-    const userQ = db.query('SELECT * FROM users WHERE id = $1', [userId]);
-    const todayLogQ = db.query(
-      `SELECT * FROM daily_logs WHERE user_id = $1 AND log_date = CURRENT_DATE`,
-      [userId]
+    // 2. food_logs tablosundan BUGÜN tüketilen gerçek makroları topla
+    const foodSummaryRes = await db.query(`
+      SELECT 
+        COALESCE(SUM(calories), 0)::int AS total_calories,
+        COALESCE(SUM(protein_g), 0)::numeric(6,1) AS total_protein,
+        COALESCE(SUM(carbs_g), 0)::numeric(6,1) AS total_carbs,
+        COALESCE(SUM(fats_g), 0)::numeric(6,1) AS total_fats
+      FROM food_logs
+      WHERE user_id = $1 AND log_date = CURRENT_DATE
+    `, [user.id]);
+
+    const eaten = foodSummaryRes.rows[0];
+
+    // 3. Su takibini daily_logs tablosundan al
+    const logRes = await db.query(
+      'SELECT water_ml FROM daily_logs WHERE user_id = $1 AND log_date = CURRENT_DATE',
+      [user.id]
     );
-    const planQ = db.query(
-      `SELECT
-         breakfast_done, lunch_done, dinner_done, snack_done,
-         breakfast_snapshot, lunch_snapshot, dinner_snapshot, snack_snapshot,
-         breakfast_id, lunch_id, dinner_id, snack_id
-       FROM meal_plans WHERE user_id = $1 AND plan_date = CURRENT_DATE`,
-      [userId]
-    );
-    const last7Q = db.query(
-      `SELECT log_date, weight_kg, waist_cm, water_ml, calories_eaten, protein_eaten, compliance
-         FROM daily_logs
-        WHERE user_id = $1 AND log_date >= CURRENT_DATE - INTERVAL '6 days'
-        ORDER BY log_date ASC`,
-      [userId]
-    );
+    const waterMl = logRes.rows[0]?.water_ml || 0;
 
-    const [userR, todayR, planR, last7R] = await Promise.all([userQ, todayLogQ, planQ, last7Q]);
-    if (userR.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
+    // 4. Kalan hedefler
+    const remainingKcal = Math.max(0, user.calorie_target - eaten.total_calories);
+    const remainingProtein = Math.max(0, Number(user.protein_target) - Number(eaten.total_protein));
 
-    const user = userR.rows[0];
-    const todayLog = todayR.rows[0];
-    const planRow = planR.rows[0];
+    const aiRecommendation = remainingKcal > 0
+      ? `Bugün hedefine ${remainingKcal} kcal ve ${remainingProtein.toFixed(1)}g protein kaldı. Tempoyu koru!`
+      : 'Tebrikler! Bugünün kalori hedefini başarıyla tamamladın.';
 
-    // Derive today's calories_eaten + protein_eaten from completed (done=true) meals.
-    // We prefer the snapshot column; if it's a legacy plan with only meal_id, we'd need a
-    // separate join — for now legacy rows simply contribute 0 (they predate the snapshot
-    // refactor and their done flags weren't set anyway).
-    const eaten = planRow ? sumCompletedFromPlan(planRow) : { calories: 0, protein: 0 };
-
-    const today = {
-      calories_eaten: eaten.calories,
-      protein_eaten:  Math.round(eaten.protein),
-      water_ml:       todayLog?.water_ml ?? 0,
-      compliance:     todayLog?.compliance ?? null,
-    };
-
-    const last7 = last7R.rows;
-    const [insight, streak] = await Promise.all([
-      buildInsight(user, last7, today),
-      computeStreak(db, userId),
-    ]);
-
-    res.json({
-      user,
-      today: {
-        calories_eaten: today.calories_eaten,
-        calories_target: user.calorie_target,
-        protein_eaten:  today.protein_eaten,
-        protein_target: user.protein_target,
-        water_ml:       today.water_ml,
-        water_target_ml: 3000,
-        compliance:     today.compliance ?? 0,
-      },
-      trend: last7,
-      insight,
-      streak,
+    return res.status(200).json({
+      caloriesTarget: user.calorie_target,
+      caloriesConsumed: eaten.total_calories,
+      caloriesRemaining: remainingKcal,
+      proteinTarget: user.protein_target,
+      proteinConsumed: Number(eaten.total_protein),
+      carbsTarget: user.carbs_target || 350,
+      carbsConsumed: Number(eaten.total_carbs),
+      fatTarget: user.fats_target || 52,
+      fatConsumed: Number(eaten.total_fats),
+      waterTargetLiters: 3.0,
+      waterDrankLiters: (waterMl / 1000).toFixed(1),
+      streakDays: 1,
+      aiRecommendation,
     });
-  } catch (err) { next(err); }
+  } catch (error) {
+    console.error('Dashboard DB Error:', error);
+    return res.status(500).json({ error: 'Dashboard verileri alınamadı: ' + error.message });
+  }
 });
 
-const SLOTS = ['breakfast', 'lunch', 'dinner', 'snack'];
+// Su Ekleme Endpoint'i (+250ml)
+router.post('/water', async (req, res) => {
+  try {
+    const userRes = await db.query('SELECT id FROM users ORDER BY id DESC LIMIT 1');
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'Kullanıcı yok' });
 
-function sumCompletedFromPlan(plan) {
-  let cal = 0;
-  let pro = 0;
-  for (const slot of SLOTS) {
-    if (!plan[`${slot}_done`]) continue;
-    const snap = plan[`${slot}_snapshot`];
-    if (snap && typeof snap === 'object') {
-      cal += Number(snap.calories  || 0);
-      pro += Number(snap.protein_g || 0);
-    }
+    const userId = userRes.rows[0].id;
+    await db.query(`
+      INSERT INTO daily_logs (user_id, log_date, water_ml)
+      VALUES ($1, CURRENT_DATE, 250)
+      ON CONFLICT (user_id, log_date)
+      DO UPDATE SET water_ml = daily_logs.water_ml + 250;
+    `, [userId]);
+
+    const updated = await db.query(
+      'SELECT water_ml FROM daily_logs WHERE user_id = $1 AND log_date = CURRENT_DATE',
+      [userId]
+    );
+
+    return res.json({ success: true, waterDrankLiters: (updated.rows[0].water_ml / 1000).toFixed(1) });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
-  return { calories: cal, protein: pro };
-}
+});
 
 module.exports = router;
